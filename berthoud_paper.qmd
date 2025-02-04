@@ -1,0 +1,284 @@
+---
+title: "berthoud_paper"
+format: html
+editor: visual
+---
+
+Set up Configuration and load in packages
+
+```{bash}
+Rscript 0_R/config.R 2024 37
+```
+
+Read in Mosquito Trap Level Data using the googledrive package
+
+```{r}
+#pull database from googledrive location and read it as a csv
+list2env(readRDS("1_input/config_params.RDS"),          
+         envir = .GlobalEnv)
+
+pacman::p_load(tidyverse, patchwork)
+```
+
+Read in Files if Necessary
+
+```{r}
+if(!file.exists(fn_database_input)){
+  gsheet_pull(database_gsheet_key, "data", fn_database_input)
+}
+
+database = read.csv(fn_database_input)
+```
+
+Define Group Variables
+
+```{r}
+grp_var = c("year", "week", "zone", "status")
+dist_var = c("trap_date", "trap_id", "zone", "method", "status")
+new_traps = c("BE-001", "BE-002", "BE-003", "BE-004", "BE-005")
+```
+
+Filter and separate out the original traps from the new traps in order to run abundance and PIR calculations on
+
+```{r}
+be = database %>% 
+  filter(year == year_filter) %>%
+  filter(zone == "BE") %>%
+  filter(week > 24) %>% #no new traps before week 24 and week 35 pir is wonky
+  mutate(status =  if_else(trap_id %in% new_traps, 
+                          "new",
+                          "original"))
+
+#create df's with original new and both and combine
+be_new = be %>%
+  filter(status == "new")
+
+be_original = be %>%
+  filter(status == "original")
+
+be = be %>%
+  mutate(status = "combined")
+
+be_list = list("be"= be, "be_new" = be_new, "be_original" = be_original)
+
+#adds original and new as duplicate values but differentiates for the analysis
+be_all <- be_list %>%
+  bind_rows() %>%  # Add this line to keep track of which list each row came from
+  arrange(across(all_of(grp_var))) %>%
+  unite(col = "grp", all_of(grp_var), sep = "-", remove = FALSE)
+```
+
+Calc new, original and combined PIR separately
+
+```{r}
+  #run pIR
+pacman::p_load(PooledInfRate)
+mle = pIR(test_code ~ total|grp, data = be_all, pt.method = "firth")
+
+be_pir = as.data.frame(mle) %>%
+   separate(grp,
+            into = grp_var,
+            sep = "-") %>%
+   transmute(year = as.integer(year),
+             week = as.integer(week),
+             zone = zone,
+             status = status,
+             pir = round(P,4),
+             pir_lci = round(Lower,4),
+             pir_uci = round(Upper,4)
+           )
+```
+
+
+
+Calc number of distinct light traps traps being set each week
+
+```{r}
+fun_count_zone_traps = function(df) {
+  df %>% 
+  distinct(year, week, zone, trap_id, status) %>% #remove the multiples pools per trap
+  group_by(year, week, zone, status) %>%
+  count %>%
+  ungroup 
+}
+
+be_all_trap = fun_count_zone_traps(be_all)
+```
+
+calc total mosquitoes collected in light traps for each week
+
+```{r}
+total_mosq = function(df, grp) {
+ df %>% group_by(!!!syms(grp)) %>%
+  filter(method == "L") %>%
+  reframe(mosq_L = sum(total))
+}
+
+be_total_mosq = be_all %>%
+  total_mosq(grp_var)
+
+
+#be_total_mosq_list = map(be_list, ~total_mosq(.x, grp_var))
+```
+
+
+
+Calc the abundance with Confidence Intervals
+
+```{r}
+be_abund = be_all %>%
+  filter(method == "L") %>%
+  group_by(year, week, zone, status, spp, trap_id) %>%
+  reframe(total = sum(total)) %>% # get total num mosquitoes per trap
+  group_by(year, week, zone, status) %>% #now get summary stats for the zone
+  reframe(mosq_L = sum(total),
+          n = n(),
+          abund = round(mean(total),4),
+          abund_sd = round(sd(total),4)) %>%
+  ungroup %>%
+  mutate(abund_lci = round(abund - (1.96*(abund_sd/n^0.5)),4),
+         abund_uci = round(abund + (1.96*(abund_sd/n^0.5)),4)
+         ) %>%
+  mutate(abund_lci = if_else(abund_lci < 0, 0, abund_lci))
+```
+
+
+
+
+
+
+join the total mosq and traps together in order to calculate the abundance and VI
+
+```{r}
+# be_all <- map2(be_trap_list, be_total_mosq_list, 
+#                     ~left_join(.x, .y, by = grp_var)) %>%
+#   bind_rows()
+
+# be_comb = left_join(be_total_mosq, be_all_trap, c = grp_var) %>%
+#   mutate(abund = round(mosq_L/n,1)) %>%
+#   left_join(be_pir, by = grp_var) %>% 
+#     mutate(vi = round(abund * pir,4),
+#           vi_lci = round(abund * pir_lci,4),
+#           vi_uci = round(abund * pir_uci,4)
+#           )
+
+be_comb = be_abund %>%
+     left_join(be_pir, by = grp_var) %>% 
+     mutate(vi = round(abund * pir,4),
+           vi_lci = round(abund * pir_lci,4),
+           vi_uci = round(abund * pir_uci,4)
+           )
+
+write.csv(be_comb, "3_output/berthoud_trap_analysis.csv")
+```
+
+Double Check that calculations match
+
+```{r}
+data_zone_wk = read.csv("1_input/data_zone_wk.csv") %>%
+  filter(zone == "BE" & spp == "All") %>%
+  mutate(status = "combined") %>%
+  select(year, week, zone, status, mosq_L, trap_L_func, abund, pir, vi)
+ 
+test = full_join(be_comb %>% filter(status == "combined"),
+                 data_zone_wk, by = grp_var) %>%
+ select(week, mosq_L.x, mosq_L.y, n, trap_L_func, abund.x, abund.y, pir.x, pir.y, vi.x, vi.y) %>%
+  mutate(match_abund = abund.x == abund.y,
+         match_pir = pir.x == pir.y,
+         match_vi = vi.x == vi.y)
+```
+
+# Plot Positive Traps
+
+```{r}
+be_pos_trap = be_all %>%
+  filter(status != "combined" & test_code == 1) %>%
+  group_by(!!!syms(grp_var)) %>%
+  count() %>%
+  ungroup() %>%
+  complete(year, week, zone, status, fill = list(n =0)) %>%
+  mutate(week = factor(week))
+
+
+p_pos_trap = ggplot(be_pos_trap, aes(x = week, y = n, color = status, fill = status)) +
+  geom_col(position = position_dodge(), alpha = 0.5) +
+  theme_classic() +
+  scale_fill_manual(values = status_pal2) +  # Use scale_fill_manual for ribbon color
+  scale_color_manual(values = status_pal2) +  # Keep scale_color_manual for line/point color
+  ylab("# Positive Traps") +
+  xlab('Week')+
+  theme(legend.position = "bottom",
+        plot.title = element_text(hjust = 0, vjust = 1),
+        axis.text = element_text(size = 12),
+        axis.title = element_text(size = 12))
+
+p_pos_trap 
+ggsave("3_output/p_pos_trap.pdf", width = 14, height = 5)
+    
+```
+
+Make Longer for Plotting
+
+```{r}
+be_comb_long = be_comb %>%
+  pivot_longer(cols = -c(year, week, zone, status), 
+               names_to = 'type', 
+               values_to = 'value')
+
+```
+
+# Plot Abundance, PIR, and VI
+
+```{r}
+
+#pd = position_dodge(0.7)
+
+source("0_R/ci_line_plot_fun.R")
+
+be_comb2 = be_comb %>%
+  filter(status != "new") %>%
+  mutate(status = factor(status, levels = c("combined", "original" )))
+
+#create a new df for the abundance plot so you can stack the abundance so the colors for the area dont get messed up
+be_comb_abund = be_comb2 %>%
+  select(year, week, zone, status, abund) %>%
+  pivot_wider(names_from = status, values_from = abund) %>%
+  mutate(`combined` = abs(`combined` - original)) %>% #change original to original plus new because it will area stack and it will end up being the same
+  pivot_longer(cols = c(`combined`, original), names_to = "status", values_to = "abund") %>%
+  mutate(status = factor(status, levels = c("combined", "original" )))
+
+p_abund = ci_fun(be_comb2, abund, abund_lci, abund_uci, status, "ABUNDANCE") +
+    scale_x_continuous(breaks = week_filter_hx) +
+  theme(legend.position = "none")
+
+p_abund
+
+p_vi = ci_fun(be_comb2, vi, vi_lci, vi_uci, status, "VECTOR INDEX") +
+  scale_y_continuous(breaks = seq(0, 2, by = 0.25)) +
+  scale_x_continuous(breaks = week_filter_hx) +
+  theme(legend.position = "bottom")
+p_vi
+
+p_pir = ci_fun(be_comb2, pir, pir_lci, pir_uci, status, "POOLED INFECTION RATE") +
+    coord_cartesian(ylim = c(0, .05)) +
+    scale_y_continuous(breaks = seq(0, .1, by = 0.01)) +
+    scale_x_continuous(breaks = week_filter_hx) +
+  theme(legend.position = "bottom",
+        axis.title.x = element_blank())
+    
+plot1 = (p_pir / p_vi) +
+  plot_layout(guides = "collect") &
+  theme(legend.position = "bottom",
+        legend.text = element_text(size = 12),
+        legend.title = element_blank())
+
+p_abund / plot1 +
+  plot_layout(heights = c(1,2))
+
+ggsave("3_output/plot1.pdf", width = 14, height = 10)
+```
+
+
+```{r}
+source("0_R/yearly_variance.R")
+```
