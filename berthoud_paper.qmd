@@ -89,8 +89,6 @@ be_pir = as.data.frame(mle) %>%
            )
 ```
 
-
-
 Calc number of distinct light traps traps being set each week
 
 ```{r}
@@ -121,8 +119,6 @@ be_total_mosq = be_all %>%
 #be_total_mosq_list = map(be_list, ~total_mosq(.x, grp_var))
 ```
 
-
-
 Calc the abundance with Confidence Intervals
 
 ```{r}
@@ -142,25 +138,10 @@ be_abund = be_all %>%
   mutate(abund_lci = if_else(abund_lci < 0, 0, abund_lci))
 ```
 
-
-
-
-
-
 join the total mosq and traps together in order to calculate the abundance and VI
 
 ```{r}
-# be_all <- map2(be_trap_list, be_total_mosq_list, 
-#                     ~left_join(.x, .y, by = grp_var)) %>%
-#   bind_rows()
 
-# be_comb = left_join(be_total_mosq, be_all_trap, c = grp_var) %>%
-#   mutate(abund = round(mosq_L/n,1)) %>%
-#   left_join(be_pir, by = grp_var) %>% 
-#     mutate(vi = round(abund * pir,4),
-#           vi_lci = round(abund * pir_lci,4),
-#           vi_uci = round(abund * pir_uci,4)
-#           )
 
 be_comb = be_abund %>%
      left_join(be_pir, by = grp_var) %>% 
@@ -277,7 +258,6 @@ p_abund / plot1 +
 
 ggsave("3_output/plot1.pdf", width = 14, height = 10)
 ```
-
 
 ```{r}
 source("0_R/yearly_variance.R")

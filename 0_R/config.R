@@ -11,6 +11,12 @@ suppressMessages({
   
 })
 
+
+if (!requireNamespace("PooledInfRate", quietly = TRUE)) {
+  p_load(devtools)
+  devtools::install_github("https://github.com/CDCgov/PooledInfRate",build_vignettes = TRUE)
+}
+
 if(!file.exists("data_input/config_params.RDS")) {
 #>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
 #FUNCTIONS
