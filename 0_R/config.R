@@ -7,14 +7,15 @@ suppressMessages({
                  tidyverse, janitor, lubridate, rquery, #manipulation
                  PooledInfRate, #analysis
                  ggpubr, wesanderson, paletteer, leaflet, patchwork# plotting
-  )
+                )
   
-})
+                })
 
 
 if (!requireNamespace("PooledInfRate", quietly = TRUE)) {
   p_load(devtools)
-  devtools::install_github("https://github.com/CDCgov/PooledInfRate",build_vignettes = TRUE)
+  devtools::install_github("https://github.com/CDCgov/PooledInfRate",
+                           build_vignettes = TRUE)
 }
 
 if(!file.exists("data_input/config_params.RDS")) {
@@ -83,6 +84,7 @@ fn_gdrive_database = "wnv-s_database"
 
 #weekly input
 fn_datasheet_input = "1_input/datasheet" #replaced vdci and cdc input because also have boulder so all in one place
+fn_culex_sheet = "1_input/culex_sheet_combined.csv"
 fn_platemap = "1_input/platemap"
 fn_pcr = "1_input/pcr"
 

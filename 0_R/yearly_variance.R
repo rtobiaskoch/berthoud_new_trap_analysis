@@ -1,16 +1,14 @@
 
-
 list2env(readRDS("1_input/config_params.RDS"),          
          envir = .GlobalEnv)
 
-if(!file.exists(fn_database_input)){
-  gsheet_pull(database_gsheet_key, "data", fn_database_input)
-}
+# if(!file.exists(fn_database_input)){
+#   gsheet_pull(database_gsheet_key, "data", fn_database_input)
+# }
 
-pacman::p_load(tidyverse, PooledInfRate, patchwork)
+pacman::p_load(tidyverse, PooledInfRate, patchwork, rquery)
 
 database = read.csv(fn_database_input)
-
 
 be = database %>% 
   filter(zone == "BE")
@@ -22,14 +20,24 @@ grp_vars = c("year", "week", "zone")
 
 #replace abund from the culex trap data
 data_zone_wk_update = read.csv("1_input/data_zone_wk_new_update.csv") %>%
-  filter(year < 2024 & zone == "BE") %>%
+  filter(year < 2024 & zone == "BE" & spp == "All") %>%
+  group_by(year, week, zone, abund) %>%
   select(year, week, zone, abund)
 
 #note with addition of culex data sd is wrong. I think this is okay because it is not being vizualized
-be_vi = calc_vi_stats(be, grp_vars) %>%
+#recalc 
+be_vi = calc_vi(be, grp_vars) %>%
+  mutate(year = as.integer(year),
+         week = as.integer(week)) %>%
+  #add the abund from the culex_sheet that is in data_zone_wk_update
   left_join(data_zone_wk_update, by = grp_vars) %>%
-  mutate(abund = if_else(!is.na(abund.y), abund.y, abund.x)) %>%
+  mutate(abund = coalesce(abund.y, abund.x)) %>%
   select(-abund.x, -abund.y) %>%
+  #recalc VI
+    mutate(vi = round(abund * pir,4),
+           vi_lci = round(abund * pir_lci,4),
+           vi_uci = round(abund * pir_uci,4)
+    ) %>%
   mutate(week = factor(week),
          year2 = case_when(year == 2024 ~ "2024",
                            year == 2023 ~ "2023",
@@ -65,10 +73,12 @@ p_pir_line = fun_line_plot(be_vi, pir, year2, "POOLED INFECTION RATE") +
   theme(axis.title.x = element_blank())
 p_pir_line
 
-
+y_min = floor(min(be_vi$vi))
+y_max = ceiling(max(be_vi$vi))
 
 p_vi_line = fun_line_plot(be_vi, vi, year2, "VECTOR INDEX")  +
-  geom_hline(yintercept = 0.75, color = "red", linetype = 2)
+  geom_hline(yintercept = 0.75, color = "red", linetype = 2) +
+  scale_y_continuous(breaks = seq(y_min, y_max, by = 1), limits = c(y_min, y_max))
 p_vi_line
 
 
@@ -79,4 +89,4 @@ p_line = (p_abund_line/p_pir_line/p_vi_line) +
           legend.title = element_blank())
 p_line  
 
-ggsave("3_output/line_variance_17-23.pdf", width = 14, height = 10)
+ggsave("3_output/line_variance_17-24.pdf", width = 14, height = 10)

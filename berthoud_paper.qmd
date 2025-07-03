@@ -17,7 +17,7 @@ Read in Mosquito Trap Level Data using the googledrive package
 list2env(readRDS("1_input/config_params.RDS"),          
          envir = .GlobalEnv)
 
-pacman::p_load(tidyverse, patchwork)
+pacman::p_load(tidyverse, patchwork, rquery)
 ```
 
 Read in Files if Necessary
@@ -44,10 +44,12 @@ Filter and separate out the original traps from the new traps in order to run ab
 be = database %>% 
   filter(year == year_filter) %>%
   filter(zone == "BE") %>%
-  filter(week > 24) %>% #no new traps before week 24 and week 35 pir is wonky
+  filter(week >= 24) %>% #no new traps before week 24 and week 35 pir is wonky
   mutate(status =  if_else(trap_id %in% new_traps, 
                           "new",
-                          "original"))
+                          "original")) %>%
+  group_by(year, week, zone, trap_id, status, method, test_code) %>% #combine spp to get total for all spp
+  summarise(total = sum(total), .groups = "drop")
 
 #create df's with original new and both and combine
 be_new = be %>%
@@ -89,48 +91,29 @@ be_pir = as.data.frame(mle) %>%
            )
 ```
 
-Calc number of distinct light traps traps being set each week
-
-```{r}
-fun_count_zone_traps = function(df) {
-  df %>% 
-  distinct(year, week, zone, trap_id, status) %>% #remove the multiples pools per trap
-  group_by(year, week, zone, status) %>%
-  count %>%
-  ungroup 
-}
-
-be_all_trap = fun_count_zone_traps(be_all)
-```
-
-calc total mosquitoes collected in light traps for each week
-
-```{r}
-total_mosq = function(df, grp) {
- df %>% group_by(!!!syms(grp)) %>%
-  filter(method == "L") %>%
-  reframe(mosq_L = sum(total))
-}
-
-be_total_mosq = be_all %>%
-  total_mosq(grp_var)
-
-
-#be_total_mosq_list = map(be_list, ~total_mosq(.x, grp_var))
-```
+Get the total number of mosquitoes from the culex_sheet
 
 Calc the abundance with Confidence Intervals
 
 ```{r}
+culex_abund = read.csv(fn_culex_sheet) %>%
+  group_by(year, week, zone, trap_id) %>% #combine spp to get all spp total
+  summarize(total = sum(total))
+
 be_abund = be_all %>%
   filter(method == "L") %>%
-  group_by(year, week, zone, status, spp, trap_id) %>%
+  group_by(year, week, zone, status, trap_id) %>%
   reframe(total = sum(total)) %>% # get total num mosquitoes per trap
+  #replace that total with the culex_sheet data which is more complete
+  rquery::natural_join(culex_abund, 
+                       by = c("trap_id", "year", "week", "zone"), 
+                       jointype = "LEFT") %>%
   group_by(year, week, zone, status) %>% #now get summary stats for the zone
-  reframe(mosq_L = sum(total),
-          n = n(),
-          abund = round(mean(total),4),
-          abund_sd = round(sd(total),4)) %>%
+  summarize(mosq_L = sum(total),
+          n = n_distinct(trap_id, na.rm = TRUE), #if all na make 0 from filling in missing zones else count distinct
+          abund = round(mosq_L/n,4),
+          abund_sd = round(sd(total),4)
+          ) %>%
   ungroup %>%
   mutate(abund_lci = round(abund - (1.96*(abund_sd/n^0.5)),4),
          abund_uci = round(abund + (1.96*(abund_sd/n^0.5)),4)
@@ -141,7 +124,6 @@ be_abund = be_all %>%
 join the total mosq and traps together in order to calculate the abundance and VI
 
 ```{r}
-
 
 be_comb = be_abund %>%
      left_join(be_pir, by = grp_var) %>% 
@@ -167,6 +149,15 @@ test = full_join(be_comb %>% filter(status == "combined"),
   mutate(match_abund = abund.x == abund.y,
          match_pir = pir.x == pir.y,
          match_vi = vi.x == vi.y)
+```
+
+# Plot histogram
+
+```{r}
+be_all %>%
+  ggplot(aes(x = total, fill = status)) +
+  geom_histogram(position = "identity", alpha = 0.4) +
+  theme_classic()
 ```
 
 # Plot Positive Traps
